@@ -2,64 +2,82 @@
 Created by: Michael Kuczynski
 Created on: June 18th, 2022
 """
+from pathlib import Path
+from typing_extensions import deprecated
 
-import os
-import sys
-import itk
 import SimpleITK as sitk
 
-from ormir_xct.core.util.sitk_itk import itk_sitk
+from ormir_mids.utils.io import load_dicom, \
+                                load_dicom_with_subfolders, \
+                                load_omids, \
+                                load_scanco, \
+                                scanco_file_extensions
 
-file_extensions = [".nii", ".mha", ".nrrd", ".aim", ".isq"]
+from ormir_mids.utils import OMidsMedVolume
+
+file_extensions = [".nii", ".nii.gz", ".mha", ".nrrd"] + scanco_file_extensions
 
 
 def file_reader(input_file_path):
     """
-    Read the input file using the correct reader. Scanco files can only be read
-    using ITK Scanco image IO but MHA/NII images can be read using SimpleITK.
+    Read the input file using the correct reader.
 
     Parameters
     ----------
-    input_file_path : string
-
+    input_file_path : string or pathlib.Path
+        Path to the input image file.
+    
     Returns
     -------
-    image : SimpleITK.Image
+    image : SimpleITK.Image, OMidsMedVolume, tuple, or numpy.ndarray
     """
-    # Get the file extension and check if we can read it
-    input_filename = os.path.split(input_file_path)[1]
-    input_extension = os.path.splitext(input_filename)[1]
+    if not isinstance(input_file_path, Path):
+        input_file_path = Path(input_file_path)
 
-    input_extension = input_extension.lower()
-    image = None
+    if not input_file_path.exists():
+        raise FileNotFoundError(f"Input file {input_file_path} does not exist.")
 
-    if input_extension in file_extensions:
-        if input_extension == ".aim" or input_extension == ".isq":
-            # If the input AIM contains a version number, remove it and rename the file
-            if ";" in input_extension:
-                scanco_filename = input_file_path.rsplit(";", 1)[0]
-                os.rename(input_file_path, scanco_filename)
-                input_file_path = scanco_filename
+    if not input_file_path.is_file():
+        # assume it's a directory containing a DICOM series
+        if not any(input_file_path.iterdir()):
+            raise FileNotFoundError(f"Input directory {input_file_path} is empty.")
 
-            # For now, only read signed short Scanco images
-            image_type = itk.Image[itk.ctype("signed short"), 3]
-            reader = itk.ImageFileReader[image_type].New()
-            image_io = itk.ScancoImageIO.New()
-            reader.SetImageIO(image_io)
-            reader.SetFileName(input_file_path)
-            reader.Update()
-
-            image = reader.GetOutput()
-            image = itk_sitk(image)
+        if any(subdir.is_dir() for subdir in input_file_path.iterdir()):
+            # If there are subdirectories, use load_dicom_with_subfolders
+            image = load_dicom_with_subfolders(str(input_file_path))
         else:
-            image = sitk.ReadImage(input_file_path, sitk.sitkFloat32)
+            # If there are no subdirectories, use load_dicom
+            image = load_dicom(str(input_file_path))
     else:
-        print("ERROR: File extension " + str(input_extension) + " not supported.")
-        sys.exit(0)
+        # Get the file extension and check if we can read it
+        input_filename = input_file_path.name
+        input_extension = input_file_path.suffix
+
+        input_extension = input_extension.split(";")[0].lower() # Handle Scanco files with version numbers in the extension
+
+        if input_extension not in file_extensions:
+            raise ValueError(f"File extension {input_extension} not supported.\nSupported extensions are: {file_extensions}")
+
+        if input_extension in scanco_file_extensions:
+            # Handle scanco files
+            image = load_scanco(str(input_file_path))
+        elif input_extension in [".nii", ".nii.gz"]:
+            image = load_omids(str(input_file_path))
+        else:
+            # Handle MHA and NRRD files
+            image = sitk.ReadImage(str(input_file_path))
+
+    # Convert to the requested type if specified
+    # if type is not None:
+    #     image = convert_to_type(image, type)
+    # else:
+    #     # Default to returning an OMidsMedVolume object
+    #     image = convert_to_type(image, OMidsMedVolume)
 
     return image
 
 
+@deprecated("verify_image is deprecated and will be removed in a future release. Use file_reader instead.")
 def verify_image(input_image, precision=None):
     """
     Provide with string path or sitk.Image. Ensures string paths are converted to sitk.Image before processing.
@@ -76,6 +94,6 @@ def verify_image(input_image, precision=None):
     """
 
     if isinstance(input_image, str):
-        return file_reader(input_image)
+        return file_reader(input_image, sitk.Image)
     else:
         return sitk.Cast(input_image, precision) if precision else input_image

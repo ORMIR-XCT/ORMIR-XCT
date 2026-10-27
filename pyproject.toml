@@ -28,6 +28,7 @@ dependencies = [
     "notebook",
     "numpy",
     "numba",
+    "ormir-mids",
     "pandas",
     "scipy",
     "scikit-image",
